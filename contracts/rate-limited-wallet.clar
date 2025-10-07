@@ -7,6 +7,11 @@
 (define-constant ERR-DELEGATION-NOT-FOUND (err u106))
 (define-constant ERR-ALREADY-DELEGATED (err u107))
 (define-constant ERR-CANNOT-DELEGATE-TO-SELF (err u108))
+(define-constant ERR-SCHEDULE-NOT-FOUND (err u109))
+(define-constant ERR-SCHEDULE-NOT-READY (err u110))
+(define-constant ERR-SCHEDULE-ALREADY-EXECUTED (err u111))
+(define-constant ERR-SCHEDULE-CANCELLED (err u112))
+(define-constant ERR-INVALID-SCHEDULE (err u113))
 
 (define-constant CONTRACT-OWNER tx-sender)
 (define-constant BLOCKS-PER-DAY u144)
@@ -52,13 +57,47 @@
     { total-spent: uint, transaction-count: uint }
 )
 
+(define-map scheduled-withdrawals
+    { owner: principal, schedule-id: uint }
+    {
+        recipient: principal,
+        amount: uint,
+        execute-at-block: uint,
+        is-recurring: bool,
+        interval-blocks: uint,
+        max-executions: uint,
+        executions-count: uint,
+        is-active: bool,
+        created-at: uint
+    }
+)
+
+(define-map owner-schedule-counter
+    { owner: principal }
+    { next-id: uint }
+)
+
 (define-data-var total-wallets uint u0)
 (define-data-var total-deposits uint u0)
 (define-data-var total-withdrawals uint u0)
 (define-data-var total-delegations uint u0)
+(define-data-var total-schedules uint u0)
 
 (define-private (get-current-day)
     (/ stacks-block-height BLOCKS-PER-DAY)
+)
+
+(define-private (get-next-schedule-id (owner principal))
+    (let ((counter-data (default-to { next-id: u0 } (map-get? owner-schedule-counter { owner: owner }))))
+        (get next-id counter-data)
+    )
+)
+
+(define-private (increment-schedule-id (owner principal))
+    (let ((current-id (get-next-schedule-id owner)))
+        (map-set owner-schedule-counter { owner: owner } { next-id: (+ current-id u1) })
+        current-id
+    )
 )
 
 (define-private (should-reset-daily-limit (wallet-data { balance: uint, daily-limit: uint, daily-spent: uint, last-reset-block: uint, created-at: uint }))
@@ -262,6 +301,7 @@
         total-deposits: (var-get total-deposits),
         total-withdrawals: (var-get total-withdrawals),
         total-delegations: (var-get total-delegations),
+        total-schedules: (var-get total-schedules),
         contract-balance: (stx-get-balance (as-contract tx-sender)),
         current-block: stacks-block-height,
         current-day: (get-current-day)
@@ -349,6 +389,116 @@
 
 (define-read-only (get-delegation-history (owner principal) (delegate principal) (day uint))
     (map-get? delegation-history { owner: owner, delegate: delegate, day: day })
+)
+
+(define-public (schedule-withdrawal (recipient principal) (amount uint) (execute-at-block uint) (is-recurring bool) (interval-blocks uint) (max-executions uint))
+    (let ((wallet-key { owner: tx-sender })
+          (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND))
+          (schedule-id (increment-schedule-id tx-sender))
+          (schedule-key { owner: tx-sender, schedule-id: schedule-id }))
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (> execute-at-block stacks-block-height) ERR-INVALID-SCHEDULE)
+        (asserts! (>= (get balance wallet-data) amount) ERR-INSUFFICIENT-BALANCE)
+        (asserts! (or (not is-recurring) (and (> interval-blocks u0) (> max-executions u0))) ERR-INVALID-SCHEDULE)
+        (map-set scheduled-withdrawals schedule-key
+            {
+                recipient: recipient,
+                amount: amount,
+                execute-at-block: execute-at-block,
+                is-recurring: is-recurring,
+                interval-blocks: interval-blocks,
+                max-executions: max-executions,
+                executions-count: u0,
+                is-active: true,
+                created-at: stacks-block-height
+            }
+        )
+        (var-set total-schedules (+ (var-get total-schedules) u1))
+        (ok schedule-id)
+    )
+)
+
+(define-public (execute-scheduled-withdrawal (owner principal) (schedule-id uint))
+    (let ((schedule-key { owner: owner, schedule-id: schedule-id })
+          (schedule-data (unwrap! (map-get? scheduled-withdrawals schedule-key) ERR-SCHEDULE-NOT-FOUND))
+          (wallet-key { owner: owner })
+          (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND)))
+        (asserts! (get is-active schedule-data) ERR-SCHEDULE-CANCELLED)
+        (asserts! (>= stacks-block-height (get execute-at-block schedule-data)) ERR-SCHEDULE-NOT-READY)
+        (asserts! (>= (get balance wallet-data) (get amount schedule-data)) ERR-INSUFFICIENT-BALANCE)
+        
+        (try! (as-contract (stx-transfer? (get amount schedule-data) owner (get recipient schedule-data))))
+        (map-set wallets wallet-key
+            (merge wallet-data { balance: (- (get balance wallet-data) (get amount schedule-data)) })
+        )
+        (unwrap-panic (record-transaction owner (get amount schedule-data) "scheduled"))
+        (var-set total-withdrawals (+ (var-get total-withdrawals) (get amount schedule-data)))
+        
+        (let ((new-executions (+ (get executions-count schedule-data) u1)))
+            (if (get is-recurring schedule-data)
+                (if (< new-executions (get max-executions schedule-data))
+                    (map-set scheduled-withdrawals schedule-key
+                        (merge schedule-data
+                            {
+                                executions-count: new-executions,
+                                execute-at-block: (+ (get execute-at-block schedule-data) (get interval-blocks schedule-data))
+                            }
+                        )
+                    )
+                    (map-set scheduled-withdrawals schedule-key
+                        (merge schedule-data
+                            {
+                                executions-count: new-executions,
+                                is-active: false
+                            }
+                        )
+                    )
+                )
+                (map-set scheduled-withdrawals schedule-key
+                    (merge schedule-data
+                        {
+                            executions-count: new-executions,
+                            is-active: false
+                        }
+                    )
+                )
+            )
+        )
+        (ok (get amount schedule-data))
+    )
+)
+
+(define-public (cancel-scheduled-withdrawal (schedule-id uint))
+    (let ((schedule-key { owner: tx-sender, schedule-id: schedule-id })
+          (schedule-data (unwrap! (map-get? scheduled-withdrawals schedule-key) ERR-SCHEDULE-NOT-FOUND)))
+        (asserts! (get is-active schedule-data) ERR-SCHEDULE-CANCELLED)
+        (map-set scheduled-withdrawals schedule-key
+            (merge schedule-data { is-active: false })
+        )
+        (ok true)
+    )
+)
+
+(define-read-only (get-schedule-info (owner principal) (schedule-id uint))
+    (match (map-get? scheduled-withdrawals { owner: owner, schedule-id: schedule-id })
+        schedule-data
+        (ok {
+            recipient: (get recipient schedule-data),
+            amount: (get amount schedule-data),
+            execute-at-block: (get execute-at-block schedule-data),
+            is-recurring: (get is-recurring schedule-data),
+            interval-blocks: (get interval-blocks schedule-data),
+            max-executions: (get max-executions schedule-data),
+            executions-count: (get executions-count schedule-data),
+            is-active: (get is-active schedule-data),
+            created-at: (get created-at schedule-data),
+            is-ready: (>= stacks-block-height (get execute-at-block schedule-data)),
+            blocks-until-execution: (if (>= stacks-block-height (get execute-at-block schedule-data))
+                                       u0
+                                       (- (get execute-at-block schedule-data) stacks-block-height))
+        })
+        ERR-SCHEDULE-NOT-FOUND
+    )
 )
 
 (define-read-only (check-withdrawal-allowed (owner principal) (amount uint))

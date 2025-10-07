@@ -12,6 +12,8 @@
 - 🆘 **Emergency Withdraw**: Complete wallet drainage for emergencies
 - 📈 **Transaction History**: Track your spending patterns and history
 - 📋 **Wallet Analytics**: View detailed wallet statistics and remaining limits
+- 🤝 **Delegation System**: Grant controlled spending permissions to trusted parties
+- ⏰ **Scheduled Withdrawals**: Automate one-time or recurring payments
 
 ## 🏗️ Contract Architecture
 
@@ -97,6 +99,46 @@ Shows spending history for a specific day.
 
 Displays overall contract metrics and usage statistics.
 
+### ⏰ Scheduling Withdrawals
+
+```clarity
+(contract-call? .rate-limited-wallet schedule-withdrawal 'SP123... u500000 u1000 false u0 u0)
+```
+
+Schedules a one-time withdrawal of 0.5 STX at block 1000.
+
+### 📅 Recurring Payments
+
+```clarity
+(contract-call? .rate-limited-wallet schedule-withdrawal 'SP123... u100000 u1000 true u144 u30)
+```
+
+Schedules recurring withdrawals of 0.1 STX every 144 blocks for 30 executions.
+
+### ⚡ Executing Scheduled Payments
+
+```clarity
+(contract-call? .rate-limited-wallet execute-scheduled-withdrawal 'SP-OWNER... u0)
+```
+
+Anyone can execute a scheduled withdrawal when the block height is reached.
+
+### 🚫 Canceling Schedules
+
+```clarity
+(contract-call? .rate-limited-wallet cancel-scheduled-withdrawal u0)
+```
+
+Cancel an active scheduled withdrawal.
+
+### 📊 Schedule Information
+
+```clarity
+(contract-call? .rate-limited-wallet get-schedule-info 'SP-OWNER... u0)
+```
+
+View schedule details including execution readiness.
+
 ## ⚡ Key Concepts
 
 ### 🕒 Daily Reset Mechanism
@@ -140,6 +182,14 @@ Displays overall contract metrics and usage statistics.
 | u103 | Not authorized |
 | u104 | Wallet not found |
 | u105 | Wallet already initialized |
+| u106 | Delegation not found |
+| u107 | Already delegated |
+| u108 | Cannot delegate to self |
+| u109 | Schedule not found |
+| u110 | Schedule not ready for execution |
+| u111 | Schedule already executed |
+| u112 | Schedule cancelled |
+| u113 | Invalid schedule parameters |
 
 ## 🎯 Use Cases
 
@@ -148,6 +198,10 @@ Displays overall contract metrics and usage statistics.
 - 🔐 **Controlled access** to large funds
 - 📚 **Educational demonstrations** of rate limiting
 - 💼 **Corporate expense** management
+- 👪 **Family allowances** with delegation controls
+- 💳 **Automated subscriptions** via scheduled payments
+- 🏠 **Recurring rent payments** without manual intervention
+- 🔄 **Payroll automation** for periodic disbursements
 
 ---
 
