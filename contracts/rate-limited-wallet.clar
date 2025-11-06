@@ -12,6 +12,7 @@
 (define-constant ERR-SCHEDULE-ALREADY-EXECUTED (err u111))
 (define-constant ERR-SCHEDULE-CANCELLED (err u112))
 (define-constant ERR-INVALID-SCHEDULE (err u113))
+(define-constant ERR-PAUSED (err u114))
 
 (define-constant CONTRACT-OWNER tx-sender)
 (define-constant BLOCKS-PER-DAY u144)
@@ -82,6 +83,7 @@
 (define-data-var total-withdrawals uint u0)
 (define-data-var total-delegations uint u0)
 (define-data-var total-schedules uint u0)
+(define-data-var is-paused bool false)
 
 (define-private (get-current-day)
     (/ stacks-block-height BLOCKS-PER-DAY)
@@ -200,9 +202,22 @@
     )
 )
 
+(define-public (set-paused (paused bool))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+        (var-set is-paused paused)
+        (ok paused)
+    )
+)
+
+(define-read-only (get-paused)
+    (ok (var-get is-paused))
+)
+
 (define-public (deposit (amount uint))
     (let ((wallet-key { owner: tx-sender })
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (> amount u0) ERR-INVALID-AMOUNT)
         (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
         (map-set wallets wallet-key
@@ -217,6 +232,7 @@
 (define-public (withdraw (amount uint))
     (let ((wallet-key { owner: tx-sender })
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (> amount u0) ERR-INVALID-AMOUNT)
         (asserts! (>= (get balance wallet-data) amount) ERR-INSUFFICIENT-BALANCE)
         
@@ -246,6 +262,7 @@
 (define-public (update-daily-limit (new-limit uint))
     (let ((wallet-key { owner: tx-sender })
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (> new-limit u0) ERR-INVALID-AMOUNT)
         (map-set wallets wallet-key
             (merge wallet-data { daily-limit: new-limit })
@@ -258,6 +275,7 @@
     (let ((wallet-key { owner: tx-sender })
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND))
           (balance (get balance wallet-data)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (> balance u0) ERR-INSUFFICIENT-BALANCE)
         (try! (as-contract (stx-transfer? balance tx-sender tx-sender)))
         (map-set wallets wallet-key
@@ -311,6 +329,7 @@
 (define-public (delegate-spending (delegate principal) (daily-limit uint))
     (let ((wallet-key { owner: tx-sender })
           (delegation-key { owner: tx-sender, delegate: delegate }))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (is-some (map-get? wallets wallet-key)) ERR-WALLET-NOT-FOUND)
         (asserts! (> daily-limit u0) ERR-INVALID-AMOUNT)
         (asserts! (not (is-eq tx-sender delegate)) ERR-CANNOT-DELEGATE-TO-SELF)
@@ -332,6 +351,7 @@
 (define-public (revoke-delegation (delegate principal))
     (let ((delegation-key { owner: tx-sender, delegate: delegate })
           (delegation-data (unwrap! (map-get? wallet-delegations delegation-key) ERR-DELEGATION-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (map-set wallet-delegations delegation-key
             (merge delegation-data { is-active: false })
         )
@@ -344,6 +364,7 @@
           (delegation-key { owner: owner, delegate: tx-sender })
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND))
           (delegation-data (unwrap! (map-get? wallet-delegations delegation-key) ERR-DELEGATION-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (> amount u0) ERR-INVALID-AMOUNT)
         (asserts! (get is-active delegation-data) ERR-NOT-AUTHORIZED)
         (asserts! (>= (get balance wallet-data) amount) ERR-INSUFFICIENT-BALANCE)
@@ -396,6 +417,7 @@
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND))
           (schedule-id (increment-schedule-id tx-sender))
           (schedule-key { owner: tx-sender, schedule-id: schedule-id }))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (> amount u0) ERR-INVALID-AMOUNT)
         (asserts! (> execute-at-block stacks-block-height) ERR-INVALID-SCHEDULE)
         (asserts! (>= (get balance wallet-data) amount) ERR-INSUFFICIENT-BALANCE)
@@ -423,6 +445,7 @@
           (schedule-data (unwrap! (map-get? scheduled-withdrawals schedule-key) ERR-SCHEDULE-NOT-FOUND))
           (wallet-key { owner: owner })
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (get is-active schedule-data) ERR-SCHEDULE-CANCELLED)
         (asserts! (>= stacks-block-height (get execute-at-block schedule-data)) ERR-SCHEDULE-NOT-READY)
         (asserts! (>= (get balance wallet-data) (get amount schedule-data)) ERR-INSUFFICIENT-BALANCE)
@@ -471,6 +494,7 @@
 (define-public (cancel-scheduled-withdrawal (schedule-id uint))
     (let ((schedule-key { owner: tx-sender, schedule-id: schedule-id })
           (schedule-data (unwrap! (map-get? scheduled-withdrawals schedule-key) ERR-SCHEDULE-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
         (asserts! (get is-active schedule-data) ERR-SCHEDULE-CANCELLED)
         (map-set scheduled-withdrawals schedule-key
             (merge schedule-data { is-active: false })
