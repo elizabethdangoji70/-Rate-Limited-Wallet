@@ -229,6 +229,35 @@
     )
 )
 
+(define-public (pay (recipient principal) (amount uint))
+    (let ((wallet-key { owner: tx-sender })
+          (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND)))
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (>= (get balance wallet-data) amount) ERR-INSUFFICIENT-BALANCE)
+        (let ((updated-wallet (if (should-reset-daily-limit wallet-data)
+                                 (begin 
+                                     (unwrap-panic (reset-daily-spending tx-sender))
+                                     (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND))
+                                 wallet-data)))
+            (asserts! (<= (+ (get daily-spent updated-wallet) amount) (get daily-limit updated-wallet)) 
+                     ERR-DAILY-LIMIT-EXCEEDED)
+            (try! (as-contract (stx-transfer? amount tx-sender recipient)))
+            (map-set wallets wallet-key
+                (merge updated-wallet 
+                    { 
+                        balance: (- (get balance updated-wallet) amount),
+                        daily-spent: (+ (get daily-spent updated-wallet) amount)
+                    }
+                )
+            )
+            (unwrap-panic (record-transaction tx-sender amount "payment"))
+            (var-set total-withdrawals (+ (var-get total-withdrawals) amount))
+            (ok amount)
+        )
+    )
+)
+
 (define-public (withdraw (amount uint))
     (let ((wallet-key { owner: tx-sender })
           (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND)))
