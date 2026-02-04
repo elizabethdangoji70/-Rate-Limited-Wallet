@@ -13,6 +13,9 @@
 (define-constant ERR-SCHEDULE-CANCELLED (err u112))
 (define-constant ERR-INVALID-SCHEDULE (err u113))
 (define-constant ERR-PAUSED (err u114))
+(define-constant ERR-VAULT-INSUFFICIENT-FUNDS (err u115))
+(define-constant ERR-VAULT-NOT-READY (err u116))
+(define-constant VAULT-PERIOD u144)
 
 (define-constant CONTRACT-OWNER tx-sender)
 (define-constant BLOCKS-PER-DAY u144)
@@ -76,6 +79,15 @@
 (define-map owner-schedule-counter
     { owner: principal }
     { next-id: uint }
+)
+
+(define-map vaults 
+    { owner: principal } 
+    { 
+        balance: uint, 
+        unlocking-amount: uint, 
+        unlock-block: uint 
+    }
 )
 
 (define-data-var total-wallets uint u0)
@@ -570,4 +582,75 @@
         )
         ERR-WALLET-NOT-FOUND
     )
+)
+
+(define-public (deposit-to-vault (amount uint))
+    (let ((wallet-key { owner: tx-sender })
+          (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND))
+          (vault-key { owner: tx-sender })
+          (vault-data (default-to 
+              { balance: u0, unlocking-amount: u0, unlock-block: u0 } 
+              (map-get? vaults vault-key))))
+        
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (>= (get balance wallet-data) amount) ERR-INSUFFICIENT-BALANCE)
+        
+        (map-set wallets wallet-key
+            (merge wallet-data { balance: (- (get balance wallet-data) amount) })
+        )
+        
+        (map-set vaults vault-key
+            (merge vault-data { balance: (+ (get balance vault-data) amount) })
+        )
+        
+        (ok amount)
+    )
+)
+
+(define-public (initiate-vault-unlock (amount uint))
+    (let ((vault-key { owner: tx-sender })
+          (vault-data (unwrap! (map-get? vaults vault-key) ERR-WALLET-NOT-FOUND)))
+          
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (>= (get balance vault-data) amount) ERR-VAULT-INSUFFICIENT-FUNDS)
+        
+        (map-set vaults vault-key
+            {
+                balance: (- (get balance vault-data) amount),
+                unlocking-amount: (+ (get unlocking-amount vault-data) amount),
+                unlock-block: (+ stacks-block-height VAULT-PERIOD)
+            }
+        )
+        
+        (ok amount)
+    )
+)
+
+(define-public (finalize-vault-unlock)
+    (let ((vault-key { owner: tx-sender })
+          (vault-data (unwrap! (map-get? vaults vault-key) ERR-WALLET-NOT-FOUND))
+          (wallet-key { owner: tx-sender })
+          (wallet-data (unwrap! (map-get? wallets wallet-key) ERR-WALLET-NOT-FOUND))
+          (amount (get unlocking-amount vault-data)))
+          
+        (asserts! (not (var-get is-paused)) ERR-PAUSED)
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (>= stacks-block-height (get unlock-block vault-data)) ERR-VAULT-NOT-READY)
+        
+        (map-set wallets wallet-key
+            (merge wallet-data { balance: (+ (get balance wallet-data) amount) })
+        )
+        
+        (map-set vaults vault-key
+            (merge vault-data { unlocking-amount: u0 })
+        )
+        
+        (ok amount)
+    )
+)
+
+(define-read-only (get-vault-info (owner principal))
+    (map-get? vaults { owner: owner })
 )
